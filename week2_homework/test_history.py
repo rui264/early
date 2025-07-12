@@ -3,7 +3,7 @@
 
 from core_api import get_chat_history
 
-session_id = "abc"  # 这里填你实际的会话ID
+session_id = "560"  # 这里填你实际的会话ID
 history = get_chat_history(session_id)
 
 for msg in history:

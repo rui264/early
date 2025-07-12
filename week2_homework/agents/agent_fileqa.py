@@ -1,0 +1,72 @@
+import os
+from langchain_community.document_loaders import TextLoader, UnstructuredPDFLoader, UnstructuredWordDocumentLoader, UnstructuredMarkdownLoader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+from langchain.chains import RetrievalQA
+from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+
+class FileQASystem:
+    def __init__(self, file_path):
+        self.file_path = file_path
+        self.documents = self.load_documents(file_path)
+        self.vector_store = self.build_vector_store(self.documents)
+        self.llm = ChatOpenAI(temperature=0.0)
+        self.qa = RetrievalQA.from_chain_type(
+            llm=self.llm,
+            chain_type="stuff",
+            retriever=self.vector_store.as_retriever(),
+            return_source_documents=True
+        )
+
+    @staticmethod
+    def load_documents(file_path):
+        SUPPORTED_EXTS = [".txt", ".pdf", ".docx", ".md"]
+        LOADER_MAP = {
+            ".txt": TextLoader,
+            ".pdf": UnstructuredPDFLoader,
+            ".docx": UnstructuredWordDocumentLoader,
+            ".md": UnstructuredMarkdownLoader,
+        }
+        ext = os.path.splitext(file_path)[-1].lower()
+        if ext not in SUPPORTED_EXTS:
+            raise ValueError(f"暂不支持的文件类型: {ext}")
+        loader_cls = LOADER_MAP[ext]
+        loader = loader_cls(file_path)
+        return loader.load()
+
+    @staticmethod
+    def build_vector_store(documents):
+        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        texts = text_splitter.split_documents(documents)
+        embeddings = OpenAIEmbeddings()
+        return FAISS.from_documents(texts, embeddings)
+
+    def ask(self, query):
+        result = self.qa({"query": query})
+        answer = result["result"]
+        sources = result.get("source_documents", [])
+        return answer, sources
+
+def get_fileqa_tool(llm):
+    file_qa_cache = {}
+    @tool
+    def fileqa_tool(input_str: str) -> str:
+        """文件问答，格式：<文件路径>|<问题>"""
+        if "|" not in input_str:
+            return "file_qa 代理输入格式错误，应为 '<文件路径>|<问题>'"
+        file_path, query = input_str.split("|", 1)
+        file_path = file_path.strip()
+        query = query.strip()
+        cache_key = (file_path, )
+        if cache_key not in file_qa_cache:
+            try:
+                file_qa_cache[cache_key] = FileQASystem(file_path)
+            except Exception as e:
+                return f"文件加载失败: {e}"
+        file_qa = file_qa_cache[cache_key]
+        answer, sources = file_qa.ask(query)
+        src_info = "\n".join([f"来源: {getattr(doc.metadata, 'source', '未知')}" for doc in sources])
+        return f"{answer}\n{src_info}"
+    return fileqa_tool

@@ -1,16 +1,27 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from core_api import multi_agent_ask, get_chat_history, upload_knowledge_file, delete_chat_history, rename_session_id
 import logging
 import os
 from pathlib import Path
+import uvicorn
 
 app = FastAPI(
     title="多智能体问答系统API",
     description="提供多智能体问答、知识库上传和历史记录获取功能的API服务",
     version="1.0.0"
+)
+
+# 添加CORS中间件，允许前端跨域访问
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 在生产环境中应该指定具体的域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 配置日志
@@ -26,8 +37,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 class ChatRequest(BaseModel):
     session_id: str
     question: str
-    provider: Optional[str] = "openai"
-    model: Optional[str] = "gpt-4-turbo"
+    provider: str = "openai"  # 修复：移除Optional，设置默认值
+    model: str = "gpt-4-turbo"  # 修复：移除Optional，设置默认值
 
 class ChatResponse(BaseModel):
     answer: str
@@ -132,6 +143,10 @@ async def upload_file(
     file: UploadFile = File(...)
 ):
     try:
+        # 修复：检查文件名是否存在
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+            
         # 保存上传的文件到服务器
         file_path = UPLOAD_DIR / file.filename
         with open(file_path, "wb") as f:
@@ -214,3 +229,20 @@ async def rename_session(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# 健康检查接口
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "message": "API服务正常运行"}
+
+
+# 启动服务器
+if __name__ == "__main__":
+    uvicorn.run(
+        "fastapi_conn:app",
+        host="0.0.0.0",  # 允许外部访问
+        port=8000,        # 端口号
+        reload=True,      # 开发模式下自动重载
+        log_level="info"
+    )

@@ -11,13 +11,20 @@ def multi_agent_ask(session_id: str, question: str, provider: str = "openai", mo
     """
     多代理问答主入口，返回AI回复和提问时间
     """
+    # 自动补全文件路径：如果问题里没有|，自动加上session记忆的文件路径
+    if "|" not in question:
+        r = redis.Redis.from_url(os.environ.get("REDIS_URL"))
+        file_key = f"session_files:{session_id}"
+        files = r.smembers(file_key)
+        if files:
+            file_path = list(files)[-1].decode()  # 取最新上传的文件
+            question = f"{file_path}|{question}"
     from langgraph_multi_agent import TrueMultiAgentSystem
     multi_agent = TrueMultiAgentSystem(session_id, provider, model)
     result = multi_agent.ask(question)
     # 记录时间戳
     r = redis.Redis.from_url(os.environ.get("REDIS_URL"))
     time_key = f"chat_message_time:{session_id}"
-    # 获取当前历史长度，作为索引
     history_len = r.hlen(time_key)
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     r.hset(time_key, history_len, now)
@@ -27,6 +34,10 @@ def upload_knowledge_file(session_id: str, file_path: str) -> str:
     from langgraph_multi_agent import TrueMultiAgentSystem
     multi_agent = TrueMultiAgentSystem(session_id, "openai", "gpt-4-turbo")
     result = multi_agent.upload_file(file_path)
+    # 记忆文件路径到session
+    r = redis.Redis.from_url(os.environ.get("REDIS_URL"))
+    file_key = f"session_files:{session_id}"
+    r.sadd(file_key, file_path)
     return result
 
 

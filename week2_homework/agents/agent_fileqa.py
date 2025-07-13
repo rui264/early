@@ -50,19 +50,20 @@ class FileQASystem:
         sources = result.get("source_documents", [])
         return answer, sources
 
+
 # 下面保留get_fileqa_tool函数不变
 
 def get_fileqa_tool(llm):
     file_qa_cache = {}
     
     @tool
-    def fileqa_tool(input_str: str) -> str:
+    def fileqa_tool(input_str: str) -> dict:
         """文件问答工具，用于处理文档相关问题。输入格式：'<文件路径>|<问题>'"""
         try:
             print(f"fileqa_tool被调用，输入: {input_str}")
             
             if "|" not in input_str:
-                return "file_qa 代理输入格式错误，应为 '<文件路径>|<问题>'"
+                return {"result": "file_qa 代理输入格式错误，应为 '<文件路径>|<问题>'"}
             
             file_path, query = input_str.split("|", 1)
             file_path = file_path.strip()
@@ -73,7 +74,7 @@ def get_fileqa_tool(llm):
             
             # 检查文件是否存在
             if not os.path.exists(file_path):
-                return f"文件不存在: {file_path}"
+                return {"result": f"文件不存在: {file_path}"}
             
             cache_key = (file_path, )
             if cache_key not in file_qa_cache:
@@ -84,7 +85,7 @@ def get_fileqa_tool(llm):
                 except Exception as e:
                     error_msg = f"文件加载失败 ({file_path}): {str(e)}"
                     print(f"❌ {error_msg}")
-                    return error_msg
+                    return {"result": error_msg}
             
             file_qa = file_qa_cache[cache_key]
             print(f"开始问答处理...")
@@ -99,11 +100,11 @@ def get_fileqa_tool(llm):
                     result += f"\n{i}. {source}"
             
             print(f"问答处理完成，结果长度: {len(result)}")
-            return result
+            return {"result": result}
             
         except Exception as e:
             error_msg = f"fileqa_tool执行失败: {str(e)}"
             print(f"❌ {error_msg}")
-            return error_msg
+            return {"result": error_msg}
     
     return fileqa_tool

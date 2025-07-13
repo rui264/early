@@ -4,7 +4,7 @@ from langchain.tools import tool
 def get_search_tool(llm):
     search = DuckDuckGoSearchRun()
     @tool
-    def search_tool(query: str) -> str:
+    def search_tool(query: str) -> dict:
         """互联网搜索与结构化总结"""
         search_result = search.run(query)
         prompt = (
@@ -14,5 +14,6 @@ def get_search_tool(llm):
             f"搜索结果：{search_result}\n"
             "助手："
         )
-        return llm.invoke(prompt).content
+        answer = llm.invoke(prompt).content
+        return {"result": answer}
     return search_tool 

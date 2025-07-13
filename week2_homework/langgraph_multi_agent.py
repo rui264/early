@@ -14,6 +14,8 @@ from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_core.runnables import RunnableLambda
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 # 导入现有的组件
 from agents.agent_math import get_math_tool
@@ -27,6 +29,9 @@ load_dotenv()
 
 # 定义状态类型
 from typing import TypedDict, Annotated
+
+os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
+os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
 
 class MultiAgentState(TypedDict):
     user_input: Annotated[str, "用户输入"]
@@ -63,19 +68,66 @@ class TrueMultiAgentSystem:
         """创建各个专业Agent"""
         agents = {}
         
+        # 通用对话Agent
+        general_prompt = ChatPromptTemplate.from_messages([
+            ("system", 
+"""你是一个通用对话助手，专注于与用户进行日常闲聊、常见问答和一般性问题的解答。你的任务是：
+1. 用自然、亲切、简洁的语言回复用户。
+2. 回答要有温度，避免机械式回复。
+3. 只处理日常对话、闲聊、简单问候等问题，遇到专业领域问题请建议用户提更具体的问题。
+
+【示例】
+用户：你好！
+你：你好呀！很高兴见到你，有什么可以帮您的吗？
+用户：讲个笑话
+你：好的！为什么数学书总是很难过？因为它有太多的问题！
+"""),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ])
+        general_agent = create_openai_tools_agent(self.llm, [], general_prompt)
+        agents["general"] = AgentExecutor(agent=general_agent, tools=[], verbose=True)
+        
         # 数学Agent
         math_prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是一个数学专家，专门处理数学计算和推理问题。请提供详细的计算过程和结果。"),
+            ("system", 
+"""你是顶级数学专家，专注于数学计算、推理和公式推导。你的任务是：
+1. 对于用户的数学问题，给出详细的计算步骤和最终答案。
+2. 如果问题包含非数学部分，请将相关部分交由其他agent处理，不要直接拒绝。
+3. 回答要简明、准确，必要时分点说明。
+4. 只处理与数学相关的问题，不要编造与数学无关的内容。
+
+【示例】
+用户：2的100次方是多少？
+你：步骤1：2^10=1024，2^20=1048576，2^100=1267650600228229401496703205376
+最终答案：2的100次方是1267650600228229401496703205376
+用户：请查一下今天北京的最高气温，并计算比昨天高了多少度，如果昨天是28度。
+你：本问题需要与search agent协作，search agent负责查找今天北京的最高气温，我将根据其结果进行温度差计算。
+"""),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
         ])
         math_agent = create_openai_tools_agent(self.llm, [self.math_tool], math_prompt)
         agents["math"] = AgentExecutor(agent=math_agent, tools=[self.math_tool], verbose=True)
-        
+
+
         # 搜索Agent
         search_prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是一个搜索专家，专门处理需要实时信息的问题。请提供最新的、准确的信息。"),
+            ("system", 
+"""你是权威信息检索专家，专注于为用户查找最新、最权威的实时信息。你的任务是：
+1. 必须主动使用互联网工具（如search工具）快速定位，查找并返回用户需要的最新权威信息，不要让用户自己去查。
+2. 回答时要简明扼要，直接给出结论，并注明信息来源（如网站名、数据出处）。
+3. 如果查不到相关信息，必须如实说明“未查到”并建议用户尝试其他方式。
+4. 只处理需要实时信息或外部数据的问题，遇到其他问题请建议用户咨询相关专家。
+
+【示例】
+用户：现在北京的天气怎么样？
+你：根据中国气象局官网，当前北京天气为晴，气温25℃。
+用户：请查一下今天北京的最高气温
+你：search工具结果显示，今天北京的最高气温为30℃（来源：新浪天气）。
+"""),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
@@ -85,7 +137,20 @@ class TrueMultiAgentSystem:
         
         # 知识库Agent
         knowledge_prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是一个知识库专家，专门处理基于历史对话和知识库的问题。请提供深入的分析和解释。"),
+            ("system", 
+"""你是知识库与历史对话专家，专注于基于知识库和历史对话为用户提供深入分析和解释。你的任务是：
+1. 结合知识库内容和用户历史提问，给出结构化、条理清晰的答案。
+2. 回答要有逻辑、分点说明，必要时引用知识库内容。
+3. 只处理与知识库相关的问题，遇到实时信息、数学、文件等问题请建议用户咨询对应专家。
+4. 不要编造知识库外的信息。
+
+【示例】
+用户：请介绍一下牛顿三大定律。
+你：根据知识库，牛顿三大定律包括：
+1. 第一运动定律（惯性定律）...
+2. 第二运动定律（加速度定律）...
+3. 第三运动定律（作用与反作用定律）...
+"""),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
@@ -95,7 +160,18 @@ class TrueMultiAgentSystem:
         
         # 文件问答Agent
         fileqa_prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是一个文档分析专家。无论何时收到与文件相关的问题，必须调用fileqa_tool工具（不要直接回复，不要说无法访问本地文件，必须调用fileqa_tool）。输入格式为'<文件路径>|<问题>'时，直接调用fileqa_tool工具获取答案，绝不能自己编造或拒绝。"),
+            ("system", 
+"""你是文档分析专家，专注于基于用户上传的文件内容进行问答。你的任务是：
+1. 只基于上传文件内容回答问题，不要编造文件外的信息。
+2. 回答要结构化、分点说明，必要时引用文件原文。
+3. 如果输入格式为'<文件路径>|<问题>'，请直接调用fileqa_tool工具。
+4. 如果输入没有文件路径，你可以尝试调用fileqa_tool工具，自动补全为最近一次上传的文件路径和用户问题，不要让用户重复输入文件路径。
+5. 不要处理与文件无关的问题，遇到此类问题请建议用户咨询其他专家。
+
+【示例】
+用户：D:/docs/合同.pdf|请总结这份合同的主要条款
+你：文件内容分析结果：1. 合同主体... 2. 合同金额... 3. 合同期限...（如需引用原文请注明页码）
+"""),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
@@ -122,7 +198,11 @@ class TrueMultiAgentSystem:
         
         # 添加边
         workflow.add_edge("analyze_question", "execute_agents")
-        workflow.add_edge("execute_agents", "collaborate")
+        # 条件跳转：如果只用general agent，直接结束，否则进入collaborate
+        workflow.add_conditional_edges(
+            "execute_agents",
+            lambda state: END if state.get("_skip_collaborate") else "collaborate"
+        )
         workflow.add_edge("collaborate", "finalize")
         workflow.add_edge("finalize", END)
         
@@ -132,9 +212,32 @@ class TrueMultiAgentSystem:
         """分析问题，确定需要哪些Agent协作"""
         user_input = state["user_input"]
         
+        # 用LLM智能判断问题类型
+        classify_prompt = f"""
+请判断下面用户问题属于哪一类（只输出标签，不要解释）：
+- general：一般性/闲聊/无意义问题
+- math：数学计算/推理
+- search：需要实时信息/搜索
+- knowledge：知识库/历史对话
+- fileqa：文件相关
+
+用户问题：{user_input}
+标签：
+"""
+        label = self.llm.invoke([HumanMessage(content=classify_prompt)]).content.strip().lower()
+        if label == "general":
+            next_agents = ["general"]
+            state["next_agents"] = next_agents
+            state["collaboration_plan"] = "LLM判断为一般性/闲聊问题，仅调用general agent。"
+            print(f"问题分析完成，选择的Agent: {next_agents}")
+            return state
+        
         # 分析提示
         analysis_prompt = f"""
-分析以下用户问题，确定需要哪些Agent来协作处理：
+分析以下用户问题，确定需要哪些Agent来协作处理（可以多个Agent协作！）
+
+【特别说明】
+- 如果用户问题涉及“价格”“数量”“多少钱”“市场行情”“最新数据”等，需要查找实时或最新信息时，必须分配search agent协作，search agent负责查找最新数据，knowledge agent负责结合历史知识和实时数据给出综合分析。
 
 用户问题：{user_input}
 
@@ -149,6 +252,37 @@ class TrueMultiAgentSystem:
 2. 每个Agent的具体任务
 3. Agent之间的协作方式
 
+【示例1】
+用户问题：请查一下今天北京的最高气温，并计算比昨天高了多少度，如果昨天是28度。
+返回：
+{{
+    "agents": ["search", "math"],
+    "tasks": {{
+        "search": "查找今天北京的最高气温",
+        "math": "根据search agent查到的气温，计算比昨天高了多少度"
+    }},
+    "collaboration": "search agent先查气温，math agent再计算温度差"
+}}
+【示例2】
+用户问题：2的100次方是多少？
+返回：
+{{
+    "agents": ["math"],
+    "tasks": {{"math": "计算2的100次方"}},
+    "collaboration": "math agent独立完成"
+}}
+【示例3】
+用户问题：100元能在云南的花季时买几束玫瑰花。
+返回：
+{{
+    "agents": ["search", "knowledge"],
+    "tasks": {{
+        "search": "查找云南花季时玫瑰花的最新市场价格",
+        "knowledge": "结合历史知识和search agent查到的价格，分析100元能买几束玫瑰花"
+    }},
+    "collaboration": "search agent查价格，knowledge agent综合分析"
+}}
+
 请以JSON格式返回：
 {{
     "agents": ["agent1", "agent2", ...],
@@ -161,19 +295,22 @@ class TrueMultiAgentSystem:
 """
         
         # 获取分析结果
-        analysis_result = self.llm.invoke(analysis_prompt).content
+        analysis_result = self.llm.invoke([HumanMessage(content=analysis_prompt)]).content
         
         # 解析结果（简化处理）
         import json
         try:
             analysis = json.loads(analysis_result)
             next_agents = analysis.get("agents", ["knowledge"])
+            agent_tasks = analysis.get("tasks", {})
         except:
             # 如果解析失败，使用默认逻辑
             next_agents = self._default_agent_selection(user_input)
+            agent_tasks = {}
         
         state["next_agents"] = next_agents
         state["collaboration_plan"] = analysis_result
+        state["agent_tasks"] = agent_tasks
         
         print(f"问题分析完成，选择的Agent: {next_agents}")
         return state
@@ -209,6 +346,7 @@ class TrueMultiAgentSystem:
         
         agent_results = {}
         agent_analysis = {}
+        agent_tasks = state.get("agent_tasks", {})
         
         print(f"开始并行执行 {len(next_agents)} 个Agent: {next_agents}")
         
@@ -227,9 +365,17 @@ class TrueMultiAgentSystem:
                     # 执行Agent
                     result = self.agents[agent_name].invoke(agent_input)
                     output = result["output"]
-                    
-                    agent_results[agent_name] = output
-                    agent_analysis[agent_name] = f"{agent_name} Agent完成分析"
+                    # 如果是dict，取result字段，否则直接用
+                    if isinstance(output, dict) and "result" in output:
+                        output_str = output["result"]
+                    else:
+                        output_str = output
+                    agent_results[agent_name] = output_str
+                    # 优先用agent_tasks里的内容
+                    if agent_name in agent_tasks:
+                        agent_analysis[agent_name] = agent_tasks[agent_name]
+                    else:
+                        agent_analysis[agent_name] = f"{agent_name} Agent完成分析"
                     
                     print(f"✅ {agent_name} Agent执行完成")
                     
@@ -237,7 +383,7 @@ class TrueMultiAgentSystem:
                     error_msg = f"{agent_name} Agent执行出错: {str(e)}"
                     agent_results[agent_name] = error_msg
                     agent_analysis[agent_name] = error_msg
-                    print(f"❌ {agent_name} Agent执行失败: {e}")
+                    print(f"❌ {agent_name} Agent执行失败: {repr(e)}")
             else:
                 error_msg = f"未知的Agent: {agent_name}"
                 agent_results[agent_name] = error_msg
@@ -248,6 +394,12 @@ class TrueMultiAgentSystem:
         state["agent_analysis"] = agent_analysis
         
         print(f"所有Agent执行完成，结果数量: {len(agent_results)}")
+        
+        # 如果只分配到一个agent，直接返回final_answer并跳过后续节点
+        if len(state["next_agents"]) == 1:
+            only_agent = state["next_agents"][0]
+            state["final_answer"] = agent_results[only_agent]
+            state["_skip_collaborate"] = True
         return state
     
     def _get_agent_context(self, agent_name: str, user_input: str) -> str:
@@ -348,7 +500,8 @@ class TrueMultiAgentSystem:
             "agent_analysis": {},
             "collaboration_plan": "",
             "final_answer": "",
-            "next_agents": []
+            "next_agents": [],
+            "agent_tasks": {} # 初始化agent_tasks
         }
         result = self.workflow.invoke(initial_state)
         # 保存对话历史
@@ -363,8 +516,14 @@ class TrueMultiAgentSystem:
             now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             r.hset(time_key, history_len, now)
         except Exception as e:
-            print(f"[warn] 保存时间戳失败: {e}")
-        return result["final_answer"]
+            print(f"[warn] 保存时间戳失败: {repr(e)}")
+        # 拼接agent协作信息（仅多个agent时）
+        agents = result.get("next_agents", [])
+        final_answer = result["final_answer"]
+        if len(agents) > 1:
+            agent_names = "、".join(agents)
+            final_answer = f"本次回答由[{agent_names}]agent协作完成：\n\n{final_answer}"
+        return final_answer
     
     def upload_file(self, file_path: str) -> str:
         """上传文件到知识库"""
@@ -383,11 +542,11 @@ class TrueMultiAgentSystem:
             return f"✅ 知识库已更新: {file_path}"
         except Exception as e:
             error_msg = f"❌ 知识库上传失败: {str(e)}"
-            print(f"❌ {error_msg}")
+            print(f"❌ {repr(error_msg)}")
             return error_msg
 
 def main():
-    """测试真正的多代理协作系统"""
+    """测试多代理协作系统"""
     session_id = input("请输入会话ID: ") or "true_multi_agent_test"
     provider = input("请输入大模型类型(openai/qwen，默认openai): ") or "openai"
     model = input("请输入模型名(如gpt-4-turbo/qwen-turbo，默认gpt-4-turbo): ") or "gpt-4-turbo"
@@ -395,7 +554,7 @@ def main():
     # 创建真正的多代理协作系统
     multi_agent = TrueMultiAgentSystem(session_id, provider, model)
     
-    print("真正的多代理协作系统 (输入 'exit' 结束, 输入 'upload <文件路径>' 上传知识库)")
+    print("多代理协作系统 (输入 'exit' 结束, 输入 'upload <文件路径>' 上传知识库)")
     print("特点：")
     print("- 多个Agent并行处理")
     print("- Agent之间协作和通信")
@@ -424,7 +583,7 @@ def main():
             result = multi_agent.ask(user_input)
             print(f"\n【最终回复】: {result}")
         except Exception as e:
-            print(f"处理失败: {e}")
+            print(f"处理失败: {repr(e)}")
 
 if __name__ == "__main__":
     main() 

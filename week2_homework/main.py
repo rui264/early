@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File  # 新增UploadFile和File
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-import os
-import logging
 from core_api import multi_agent_ask, get_chat_history, upload_knowledge_file
+import logging
+import os
 
 app = FastAPI(
     title="多智能体问答系统API",
@@ -15,18 +15,13 @@ app = FastAPI(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 确保上传目录存在（自动创建）
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-
-# 定义数据模型（保持其他模型不变）
+# 定义数据模型
 class ChatRequest(BaseModel):
     session_id: str
     question: str
     provider: Optional[str] = "openai"
     model: Optional[str] = "gpt-4-turbo"
-
 
 class ChatResponse(BaseModel):
     answer: str
@@ -38,52 +33,20 @@ class ChatResponse(BaseModel):
 class HistoryResponse(BaseModel):
     history: List[Dict]
     success: bool
+#upload files
+
+class UploadRequest(BaseModel):
+    session_id: str
+    file_path: str
 
 
-# 【修改】文件上传响应模型（保持不变）
+
 class UploadResponse(BaseModel):
     success: bool
     message: str
     file_path: str
 
 
-# 【重点修改】文件上传接口：支持前端表单上传文件
-@app.post("/upload", response_model=UploadResponse)
-def upload_file(
-        session_id: str = Query(..., description="会话ID"),
-        file: UploadFile = File(..., description="要上传的文件（支持PDF、TXT等）")
-):
-    try:
-        # 1. 保存上传的文件到本地
-        file_save_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_save_path, "wb") as f:
-            f.write(file.file.read())  # 读取上传的文件内容并保存
-
-        # 2. 调用核心函数处理文件（传入保存后的本地路径）
-        result_message = upload_knowledge_file(
-            session_id=session_id,
-            file_path=file_save_path  # 传入实际保存的路径
-        )
-
-        return {
-            "success": True,
-            "message": result_message,
-            "file_path": file_save_path
-        }
-
-    except Exception as e:
-        logger.error(f"文件上传失败: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False,
-                "message": f"文件处理失败: {str(e)}",
-                "file_path": file.filename if file else "未知文件"
-            }
-        )
-
-# 其他接口保持不变（chat_via_get、chat_via_post、get_history）
-# ...
 # 根路径
 @app.get("/")
 def read_root():
@@ -148,7 +111,39 @@ def chat_via_post(request: ChatRequest):
             status_code=500,
             detail=f"模型服务错误: {str(e)}"
         )
+
+@app.post("/upload", response_model=UploadResponse)
+def upload_file(request: UploadRequest):
+    try:
+        logger.info(f"Uploading file: {request.file_path} for session: {request.session_id}")
+
+        # 调用核心函数
+        result_message = upload_knowledge_file(
+            session_id=request.session_id,
+            file_path=request.file_path
+        )
+
+        return {
+            "success": True,
+            "message": result_message,
+            "file_path": request.file_path
+        }
+
+    except HTTPException:
+        raise  # 直接抛出已知HTTP异常
+    except Exception as e:
+        logger.error(f"Upload failed: {str(e)}", exc_info=True)
+        raise HTTPException(500, detail={
+            "success": False,
+            "message": f"文件处理失败: {str(e)}",
+            "file_path": request.file_path
+        })
+
+
+
+
 # 获取历史记录（现在使用core_api的真实历史记录）
+
 @app.get("/history", response_model=HistoryResponse)
 def get_history(session_id: str = Query(..., min_length=1)):
     try:
@@ -163,3 +158,5 @@ def get_history(session_id: str = Query(..., min_length=1)):
             status_code=404,
             detail=f"历史记录获取失败: {str(e)}"
         )
+
+
